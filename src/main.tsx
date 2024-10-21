@@ -1,3 +1,7 @@
+import React, { createContext, StrictMode, useContext, useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import Editor, { Monaco, useMonaco, loader } from "@monaco-editor/react";
+
 import "./style.css"
 import * as monaco from "monaco-editor"
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker"
@@ -10,7 +14,7 @@ import {
   LegitScriptShaderDesc,
   LegitScriptLoadResult,
   RaisesErrorFN,
-} from "./types"
+} from "./types.js"
 
 // @ts-ignore
 import LegitScriptCompiler from "./LegitScript/LegitScriptWasm.js"
@@ -29,23 +33,34 @@ import { SourceAssembler } from "./source-assembler.js"
 import { initialContent } from "./initial-content.js"
 import { ProcessScriptRequests, RunScriptInvocations, SetBlendMode } from "./legit-script-io.js"
 import { UIState } from "./immediate-ui.js"
+import { Allotment } from "allotment";
+import "allotment/dist/style.css";
+
 
 export type State = {
+  ready: boolean
   editor: any
-  gpu: GPUState
+  gpu: GPUState | null
   framegraph: Framegraph
   legitScriptCompiler: any
-  uiState : UIState
+  uiState : UIState | null
   processedRequests : LegitScriptContextInput[]
   imageCache: ImageCache
   hasCompiledOnce: boolean
 }
+type StateAndSetter = {
+  state: State
+  setState: any
+}
+
+const StateContext = createContext<StateAndSetter>({state: initialState(), setState: () => {}});
 
 self.MonacoEnvironment = {
   getWorker: function (_moduleId: string, _label: string) {
     return new editorWorker()
   },
-}
+};
+loader.config({ monaco });
 
 
 function CompileLegitScript(
@@ -139,7 +154,7 @@ function InitWebGL(
   if (!container) {
     throw new Error("canvas must have a container")
   }
-  
+
   const res = CreateRasterProgram(gl,
     `#version 300 es
     precision highp float;
@@ -183,7 +198,7 @@ function AssembleShader(shaderDesc : LegitScriptShaderDesc) : SourceAssembler
     ${uniforms.join("\n")}
     ${samplers.join("\n")}`
   );
-  source_assembler.addSourceBlock(`${shaderDesc.body.text}`, shaderDesc.body.start);  
+  source_assembler.addSourceBlock(`${shaderDesc.body.text}`, shaderDesc.body.start);
   return source_assembler
 }
 
@@ -193,7 +208,7 @@ function CreatePass(
   fragSource : string,
   desc: LegitScriptShaderDesc
 ) : FramegraphPass{
-  
+
   return{
     fragSource : fragSource,
     blendMode : desc.blend_mode,
@@ -294,7 +309,7 @@ function SetEditorSquiggies(
   line : number,
   column : number,
   desc : string){
-  
+
   decorations.set([
     {
       range: new monaco.Range(line, 1, line, 1),
@@ -319,6 +334,7 @@ function SetEditorSquiggies(
 
   const model = editor.getModel()
   if (model) {
+  console.log(markers);
     monaco.editor.setModelMarkers(model, "legitscript", markers)
     const visibleRange = editor.getVisibleRanges()[0]
     if (
@@ -344,7 +360,9 @@ function UnsetEditorSquiggies(
 
 function OnEditorUpdate(
   state : State,
-  decorations : monaco.editor.IEditorDecorationsCollection){
+  decorations : monaco.editor.IEditorDecorationsCollection,
+  setState: (s: State) => {}
+){
   const compileResult = CompileLegitScript(
     state.legitScriptCompiler,
     state.editor
@@ -360,7 +378,8 @@ function OnEditorUpdate(
         monaco.editor.setModelMarkers(model, "legitscript", [])
         decorations.set([])
       }
-      const err = UpdateFramegraph(state.gpu, state.framegraph, compileResult)
+      const err = UpdateFramegraph(state.gpu!, state.framegraph, compileResult)
+      console.log(state)
       if(err)
       {
         SetEditorSquiggies(decorations, state.editor, err.line, 0, err.msg);
@@ -371,6 +390,7 @@ function OnEditorUpdate(
       }
     }
   }
+  setState(state)
 }
 
 async function Init(
@@ -446,30 +466,32 @@ function CopyTexToSwapchain(gpu: GPUState, tex : WebGLTexture | null){
 function ExecuteFrame(dt: number, state: State) {
   if (!state.hasCompiledOnce) {
     // TODO: render a placeholder image "sorry, the shader didn't compile" or something
-    requestAnimationFrame((dt) => ExecuteFrame(dt, state))
-    return
+    return requestAnimationFrame((dt) => ExecuteFrame(dt, state))
   }
-  
-  const gpu = state.gpu
 
+  const gpu = state.gpu!
+
+  // HACK HACK
+  // TODO(cmo): Fix this
   // Ensure we're sized properly w.r.t. pixel ratio
-  const rect = gpu.container.getBoundingClientRect()
-  if (gpu.dims[0] !== rect.width || gpu.dims[1] !== rect.height) {
-    gpu.dims[0] = rect.width
-    gpu.dims[1] = rect.height
+  // const rect = gpu.container.getBoundingClientRect()
+  // console.log(rect);
+  // if (gpu.dims[0] !== rect.width || gpu.dims[1] !== rect.height) {
+  //   gpu.dims[0] = rect.width
+  //   gpu.dims[1] = rect.height
 
-    //high DPI multiplier causes texture to fail to create when size is > 2048
-    //const width = Math.floor(rect.width * window.devicePixelRatio)
-    //const height = Math.floor(rect.height * window.devicePixelRatio)
-    const width = rect.width
-    const height = rect.height
+  //   //high DPI multiplier causes texture to fail to create when size is > 2048
+  //   //const width = Math.floor(rect.width * window.devicePixelRatio)
+  //   //const height = Math.floor(rect.height * window.devicePixelRatio)
+  //   const width = rect.width
+  //   const height = rect.height
 
-    gpu.canvas.width = width
-    gpu.canvas.height = height
+  //   gpu.canvas.width = width
+  //   gpu.canvas.height = height
 
-    gpu.canvas.style.width = `${rect.width}px`
-    gpu.canvas.style.height = `${rect.height}px`
-  }
+  //   gpu.canvas.style.width = `${rect.width}px`
+  //   gpu.canvas.style.height = `${rect.height}px`
+  // }
 
   const gl = gpu.gl
   gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -479,7 +501,7 @@ function ExecuteFrame(dt: number, state: State) {
   if (!state.framegraph) {
     return
   }
-  state.uiState.filterControls();
+  state.uiState!.filterControls();
 
   state.processedRequests.push({
     name : '@swapchain_size',
@@ -491,8 +513,8 @@ function ExecuteFrame(dt: number, state: State) {
     type : 'float',
     value : dt
   });
-  
-  
+
+
   const legitFrame = LegitScriptFrame(
     state.legitScriptCompiler,
     state.processedRequests
@@ -501,52 +523,204 @@ function ExecuteFrame(dt: number, state: State) {
 
   if (legitFrame) {
     try {
-      state.processedRequests = ProcessScriptRequests(state.uiState, state.imageCache, {x: gpu.canvas.width, y: gpu.canvas.height}, gl, legitFrame.context_requests);
-      RunScriptInvocations(state.imageCache, state.gpu, state.framegraph.passes, legitFrame.shader_invocations)
+      state.processedRequests = ProcessScriptRequests(state.uiState!, state.imageCache, {x: gpu.canvas.width, y: gpu.canvas.height}, gl, legitFrame.context_requests);
+      RunScriptInvocations(state.imageCache, state.gpu!, state.framegraph.passes, legitFrame.shader_invocations)
       CopyTexToSwapchain(gpu, ImageCacheGetImage(state.imageCache, 0));
     } catch (e) {
       // can console.log/console.error this, but it'll stuck in a busy loop until error resolves
     }
   }
 
-  requestAnimationFrame((dt) => ExecuteFrame(dt, state))
+  return requestAnimationFrame((dt) => ExecuteFrame(dt, state))
 }
 
-function InitEditor(editorEl: HTMLElement) {
-  if (!editorEl) {
-    return
-  }
-  const editor = monaco.editor.create(editorEl, {
-    value: initialContent || "",
-    language: "c",
-    minimap: {
-      enabled: false,
-    },
-    tabSize: 2,
-    automaticLayout: false,
-    theme: "vs-dark",
+// function InitEditor(editorEl: HTMLElement) {
+//   if (!editorEl) {
+//     return
+//   }
+//   const editor = monaco.editor.create(editorEl, {
+//     value: initialContent || "",
+//     language: "c",
+//     minimap: {
+//       enabled: false,
+//     },
+//     tabSize: 2,
+//     automaticLayout: false,
+//     theme: "vs-dark",
+//     glyphMargin: false,
+//   })
+
+//   return editor
+// }
+
+// function CreateEditorResizeHandler(
+//   editor: monaco.editor.IStandaloneCodeEditor,
+//   editorEl: HTMLElement
+// ) {
+//   return () => {
+//     // editor.layout({ width: 0, height: 0 })
+//     window.requestAnimationFrame(() => {
+//       const { width, height } = editorEl.getBoundingClientRect()
+//       editor.layout({ width, height })
+//     })
+//   }
+// }
+
+// Init(
+//   document.querySelector("#editor"),
+//   document.querySelector("output canvas"),
+//   document.querySelector("controls"),
+//   document.querySelector("divider")
+// )
+
+function GpuCanvas() {
+  const canvasRef = useRef(null);
+  const {state, setState} = useContext(StateContext);
+  useEffect(() => {
+    const gpu = InitWebGL(canvasRef.current! as HTMLCanvasElement, console.error);
+    setState((prevState: State) => ({...prevState, gpu}));
+  }, []);
+  // NOTE(cmo): HACK HACK
+  return <div id="output-and-controls">
+    {/* <output> */}
+      <canvas id="output" ref={canvasRef} width="400" height="400"></canvas>
+    {/* </output> */}
+  </div>
+}
+
+function ControlsFrame() {
+  const controlsRef = useRef(null);
+
+  const {state, setState} = useContext(StateContext);
+  useEffect(() => {
+    const uiState = new UIState(controlsRef.current! as HTMLElement);
+    setState((prevState: State) => ({...prevState, uiState}));
+  }, []);
+
+  return <div>Controls
+    <div id="controls" ref={controlsRef}></div>
+  </div>
+}
+
+function OutputAndControls() {
+  return <Allotment vertical>
+    <Allotment.Pane>
+      <GpuCanvas />
+    </Allotment.Pane>
+    <Allotment.Pane>
+      <ControlsFrame />
+    </Allotment.Pane>
+  </Allotment>
+}
+
+function EditorPane() {
+  const editorRef = useRef(null);
+  const monacoRef: React.MutableRefObject<Monaco | null> = useRef(null);
+  const {state, setState} = useContext(StateContext);
+  const [decorations, setDecorations] = useState(null);
+
+  const handleEditorMount = (editor: any, monaco: Monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+    editor.focus();
+    setDecorations(editor.createDecorationsCollection([]));
+    setState((prevState: State) => ({...prevState, editor}));
+  };
+
+  const handleChange = (value: any, event: any) => {
+    if (state.ready) {
+      OnEditorUpdate(state, decorations!, setState);
+    }
+  };
+
+  const options = {
     glyphMargin: false,
-  })
+    tabSize: 2,
+    minimap: {
+      enabled: false
+    }
+  };
 
-  return editor
+  return <Editor
+    height="100vh"
+    defaultLanguage="c"
+    onMount={handleEditorMount}
+    onChange={handleChange}
+    defaultValue={initialContent}
+    theme="vs-dark"
+    options={options}
+  />
 }
 
-function CreateEditorResizeHandler(
-  editor: monaco.editor.IStandaloneCodeEditor,
-  editorEl: HTMLElement
-) {
-  return () => {
-    // editor.layout({ width: 0, height: 0 })
-    window.requestAnimationFrame(() => {
-      const { width, height } = editorEl.getBoundingClientRect()
-      editor.layout({ width, height })
-    })
+function initialState() {
+  return {
+    ready: false,
+    editor: null,
+    gpu: null,
+    framegraph: {
+      passes: {},
+    },
+    legitScriptCompiler: null,
+    processedRequests: [],
+    uiState : null,
+    imageCache: {
+      id: 0,
+      allocatedImages: new Map<string, ImageCacheAllocatedImage>(),
+      requestIdToAllocatedImage: new Map<number, ImageCacheAllocatedImage>(),
+    },
+    hasCompiledOnce: false,
+  };
+}
+
+
+function App() {
+  const [state, setState] = useState<State>(initialState());
+  const requestRef = useRef(undefined);
+
+  useEffect(() => {
+    const loadCompiler = async () => {
+      const legitScriptCompiler = await LegitScriptCompiler();
+      setState((prevState: State) => ({...prevState, legitScriptCompiler}));
+    };
+    loadCompiler();
+  }, []);
+
+
+  useEffect(() => {
+    if (state.ready) {
+      return;
+    }
+
+    if (state.editor !== null && state.gpu !== null && state.legitScriptCompiler !== null && state.uiState !== null) {
+      console.log(state);
+      setState((prevState: State) => ({...prevState, ready: true}));
+    }
+  }, [state]);
+
+  const requestFrame = (dt: number) => {
+    requestRef.current = ExecuteFrame(dt, state);
   }
+
+
+  useEffect(() => {
+    if (!state.ready) {
+      return;
+    }
+
+    requestAnimationFrame(requestFrame);
+  }, [state.ready])
+
+  return <StateContext.Provider value={{state, setState}}>
+    <Allotment>
+      <EditorPane />
+      <OutputAndControls />
+    </Allotment>
+  </StateContext.Provider>
+
 }
 
-Init(
-  document.querySelector("#editor"),
-  document.querySelector("output canvas"),
-  document.querySelector("controls"),
-  document.querySelector("divider")
+createRoot(document.getElementById("app")!).render(
+  <StrictMode>
+    <App></App>
+  </StrictMode>
 )
